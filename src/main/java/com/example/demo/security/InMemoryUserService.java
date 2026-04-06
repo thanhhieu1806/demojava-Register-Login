@@ -1,5 +1,8 @@
 package com.example.demo.security;
 
+import com.example.demo.entity.AppUser;
+import com.example.demo.repository.UserRepository;
+import jakarta.annotation.PostConstruct;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -7,24 +10,41 @@ import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class InMemoryUserService implements UserDetailsService {
 
     private final PasswordEncoder passwordEncoder;
-    private final Map<String, UserRecord> users = new ConcurrentHashMap<>();
+    private final UserRepository userRepository;
 
-    public InMemoryUserService(PasswordEncoder passwordEncoder) {
+    public InMemoryUserService(PasswordEncoder passwordEncoder, UserRepository userRepository) {
         this.passwordEncoder = passwordEncoder;
-        createUserInternal("admin", "admin123", "admin@example.com", Set.of("ADMIN"));
-        createUserInternal("user", "user123", "user@example.com", Set.of("USER"));
+        this.userRepository = userRepository;
     }
 
+    @PostConstruct
+    public void initDefaultUsers() {
+        createIfAbsent("admin", "admin123", "admin@example.com", Set.of("ADMIN"));
+        createIfAbsent("user", "user123", "user@example.com", Set.of("USER"));
+    }
+
+    private void createIfAbsent(String username, String rawPassword, String email, Set<String> roles) {
+        if (!userRepository.existsByUsername(username)) {
+            AppUser appUser = new AppUser(
+                    username,
+                    passwordEncoder.encode(rawPassword),
+                    email,
+                    roles
+            );
+            userRepository.save(appUser);
+        }
+    }
+
+    @Transactional
     public void registerUser(String username, String rawPassword, String email) {
         String normalized = normalize(username);
         if (normalized == null) {
@@ -39,43 +59,33 @@ public class InMemoryUserService implements UserDetailsService {
         if ("admin".equalsIgnoreCase(normalized)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Tên đăng nhập đã tồn tại");
         }
-        UserRecord newUser = new UserRecord(
+        if (userRepository.existsByUsername(normalized)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Tên đăng nhập đã tồn tại");
+        }
+        AppUser newUser = new AppUser(
                 normalized,
                 passwordEncoder.encode(rawPassword),
                 email.trim(),
                 Set.of("USER")
         );
-        UserRecord existing = users.putIfAbsent(normalized, newUser);
-        if (existing != null) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Tên đăng nhập đã tồn tại");
-        }
+        userRepository.save(newUser);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
         String normalized = normalize(username);
         if (normalized == null) {
             throw new UsernameNotFoundException("User not found");
         }
-        UserRecord record = users.get(normalized);
-        if (record == null) {
-            throw new UsernameNotFoundException("User not found");
-        }
-        return User.builder()
-                .username(record.username())
-                .password(record.passwordHash())
-                .roles(record.roles().toArray(new String[0]))
-                .build();
-    }
+        AppUser record = userRepository.findByUsername(normalized)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found"));
 
-    private void createUserInternal(String username, String rawPassword, String email, Set<String> roles) {
-        UserRecord record = new UserRecord(
-                username,
-                passwordEncoder.encode(rawPassword),
-                email,
-                roles
-        );
-        users.put(username, record);
+        return User.builder()
+                .username(record.getUsername())
+                .password(record.getPasswordHash())
+                .roles(record.getRoles().toArray(new String[0]))
+                .build();
     }
 
     private String normalize(String username) {
@@ -84,9 +94,6 @@ public class InMemoryUserService implements UserDetailsService {
         }
         String normalized = username.trim();
         return normalized.isEmpty() ? null : normalized;
-    }
-
-    private record UserRecord(String username, String passwordHash, String email, Set<String> roles) {
     }
 
     private boolean isValidEmail(String email) {

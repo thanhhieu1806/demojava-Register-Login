@@ -18,7 +18,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
-
 import java.util.Map;
 
 @RestController
@@ -42,8 +41,15 @@ public class AuthController {
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.CREATED)
     public Map<String, String> register(@RequestBody AuthRequest request) {
-        userService.registerUser(request.username(), request.password(), request.email());
-        return Map.of("status", "ok");
+        try {
+            userService.registerUser(request.username(), request.password(), request.email());
+            return Map.of("status", "ok");
+        } catch (Exception ex) {
+            System.err.println("=== ERROR DURING REGISTRATION ===");
+            ex.printStackTrace();
+            System.err.println("=================================");
+            throw ex;
+        }
     }
 
     @PostMapping("/login")
@@ -52,22 +58,30 @@ public class AuthController {
             HttpServletRequest httpRequest,
             HttpServletResponse httpResponse
     ) {
-        Authentication authentication;
         try {
-            authentication = authenticationManager.authenticate(
-                    new UsernamePasswordAuthenticationToken(request.username(), request.password())
+            Authentication authentication;
+            try {
+                authentication = authenticationManager.authenticate(
+                        new UsernamePasswordAuthenticationToken(request.username(), request.password())
+                );
+            } catch (AuthenticationException ex) {
+                System.err.println("=== Authentication Failed for: " + request.username());
+                throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Sai tên đăng nhập hoặc mật khẩu");
+            }
+            SecurityContext context = SecurityContextHolder.createEmptyContext();
+            context.setAuthentication(authentication);
+            SecurityContextHolder.setContext(context);
+            securityContextRepository.saveContext(context, httpRequest, httpResponse);
+            return Map.of(
+                    "username", authentication.getName(),
+                    "role", extractRole(authentication)
             );
-        } catch (AuthenticationException ex) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Sai tên đăng nhập hoặc mật khẩu");
+        } catch (Exception e) {
+            System.err.println("=== UNEXPECTED ERROR DURING LOGIN ===");
+            e.printStackTrace();
+            System.err.println("=====================================");
+            throw e;
         }
-        SecurityContext context = SecurityContextHolder.createEmptyContext();
-        context.setAuthentication(authentication);
-        SecurityContextHolder.setContext(context);
-        securityContextRepository.saveContext(context, httpRequest, httpResponse);
-        return Map.of(
-                "username", authentication.getName(),
-                "role", extractRole(authentication)
-        );
     }
 
     private String extractRole(Authentication authentication) {
@@ -78,5 +92,4 @@ public class AuthController {
                 .findFirst()
                 .orElse("USER");
     }
-
 }
